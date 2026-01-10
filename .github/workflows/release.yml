@@ -1,0 +1,218 @@
+name: Build XCreds
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g., tag-5.8(9058))'
+        required: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Build and Package
+        id: build
+        shell: bash
+        run: |
+          set -e
+
+          export BUNDLE_ID_PREFIX="${{ secrets.BUNDLE_ID_PREFIX }}"
+          export id_full="${{ secrets.DEVELOPER_ID }}"
+          id=$(echo "$id_full" | sed -E 's/^.*\((.*)\).*$/\1/')
+
+          # Switch xcode verison
+          sudo xcode-select --switch /Applications/Xcode_26.0.app/Contents/Developer
+
+          # Install Homebrew if not installed
+          which brew || /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+          # Install dependencies
+          echo "installing dependencies"
+          brew install carthage git gsed coreutils
+          curl -L -o /tmp/Packages.dmg https://github.com/packagesdev/packages/releases/download/v1.2.11-b2/Packages_1211_758.dmg
+          hdiutil attach /tmp/Packages.dmg -nobrowse -quiet
+          MOUNT_POINT=$(find /Volumes -iname "*packages*" 2>/dev/null | head -n 1 || true)
+          sudo installer -pkg "$MOUNT_POINT/Install Packages.pkg" -target /Applications
+          hdiutil detach "$MOUNT_POINT" -quiet
+
+
+          # Clone repo
+          echo "cloning repos"
+          rm -rf xcreds/
+          git clone https://github.com/twocanoes/xcreds.git
+          cd xcreds
+          git checkout "tags/${{ github.event.inputs.tag }}" -b build
+
+          # Submodules
+          git submodule set-url tcsopensourcetools https://bitbucket.org/twocanoes/tcsopensourcetools.git
+          gsed -i 's|git@bitbucket.org:twocanoes/tcsopensourcetools.git|https://bitbucket.org/twocanoes/tcsopensourcetools.git|' .gitmodules
+          git submodule update --init --recursive
+
+          # Fix bundle ID & signing team
+          echo "fixing bundle id and signing team"
+          grep -RlI 'com\.twocanoes' . | sed -e 's_\(.*\)_"\1"_g' | xargs gsed -i "s/com\.twocanoes/$BUNDLE_ID_PREFIX/g"
+          grep -RlI 'UXP6YEHSPW' . | sed -e 's_\(.*\)_"\1"_g' | xargs gsed -i "s/UXP6YEHSPW/$id/g"
+
+          # Rename files with bundleid
+          find . -iname '*com.twocanoes*' -exec bash -c 'old="$1"; new=$(printf "%s\n" "$old" | sed "s/com\.twocanoes/$2/"); mv "$old" "$new"' _ {} "$BUNDLE_ID_PREFIX" \;
+
+          # Disable license check
+          echo "disabling license check"
+          file_line=$(grep -A1 -Rn 'func currentLicenseState' | tail -n1 | grep -o '.*[[:digit:]].*\-')
+          line_num=$(echo "$file_line" | grep -oE '[[:digit:]]+')
+          echo "$file_line" | sed 's/\-.*//' | sed -e 's_\(.*\)_"\1"_g' | xargs gsed -i "${line_num}i\        return .valid(31536000)"
+
+          # Overwrite build.sh
+          echo "overwriging build.sh"
+          cat <<EOF > build.sh
+          #!/bin/bash
+          set -e
+          pushd ./build_resources/buildscripts/
+          SKIP_DMG=1 ./build.sh --force
+          popd
+          EOF
+
+          # Local productlicense.json
+          echo "creating local productlicense.json"
+          cat <<EOF > /tmp/productlicense.json
+          {
+            "1.4.0": "https://api.bitbucket.org/2.0/repositories/twocanoes/productlicense-public/downloads/ProductLicense.framework.zip"
+          }
+          EOF
+
+          # Fix Cartfile
+          echo "Fixing Cartfile"
+          echo 'binary "file:///tmp/productlicense.json"' > Cartfile
+
+          # Disable git in build script
+          echo "disable git in build"
+          gsed -i 's/^git/#git/' build_resources/buildscripts/build.sh
+
+          # Authenticate with Apple
+          echo "${{ secrets.APPLE_API_KEY }}" > /tmp/api_key.p8
+
+          # Fix build commands
+          echo "fixing build commands"
+          gsed -i "s|xcodebuild archive|xcodebuild archive -allowProvisioningUpdates -authenticationKeyPath /tmp/api_key.p8 -authenticationKeyID ${{ secrets.APPLE_API_KEY_ID }} -authenticationKeyIssuerID ${{ secrets.APPLE_API_ISSUER_ID }}|" build_resources/buildscripts/build.sh
+          gsed -i 's|xcodebuild -exportArchive .*|xcodebuild -exportArchive -archivePath "${temp_folder}/${PRODUCT_NAME}.xcarchive"  -exportOptionsPlist "${SRC_PATH}/build_resources/exportOptions.plist" -exportPath "${BUILD_FOLDER}"|' build_resources/buildscripts/build.sh
+
+          # Create build keychain
+          echo "creating keychain"
+          security create-keychain -p "" build.keychain
+          security list-keychains -d user -s build.keychain
+          security default-keychain -s build.keychain
+
+          # Unlock build keychain
+          security unlock-keychain -p "" build.keychain
+          security set-keychain-settings build.keychain
+          security show-keychain-info build.keychain
+
+          # Import certificates
+          echo "importing certs"
+          echo "${{ secrets.DEV_ID_APP_P12 }}" | base64 --decode > /tmp/dev_app.p12
+          echo "${{ secrets.DEV_ID_INSTALLER_P12 }}" | base64 --decode > /tmp/dev_installer.p12
+          echo "${{ secrets.MAC_DEV_P12 }}" | base64 --decode > /tmp/mac_dev.p12
+          echo "${{ secrets.APPLE_DEV_P12 }}" | base64 --decode > /tmp/apple_dev.p12
+
+          security import /tmp/dev_app.p12 -k build.keychain -P "${{ secrets.APPLE_CERT_PASSWORD }}" -A
+          security import /tmp/dev_installer.p12 -k build.keychain -P "${{ secrets.APPLE_CERT_PASSWORD }}" -A
+          security import /tmp/mac_dev.p12 -k build.keychain -P "${{ secrets.APPLE_CERT_PASSWORD }}" -A
+          security import /tmp/apple_dev.p12 -k build.keychain -P "${{ secrets.APPLE_CERT_PASSWORD }}" -A
+
+          # Keychain perms
+          echo "setting keychain partition list"
+          security set-key-partition-list -S apple-tool:,apple:,codesign:,productsign:,packagesbuild:,pkgbuild:,security:,timestamp: -s -k "" build.keychain
+
+          # Import provisioning profiles
+          echo "importing provisioning profiles"
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles/"
+          echo "${{ secrets.XCREDS_AUTOFILL_PROFILE }}" | base64 --decode > "$HOME/Library/MobileDevice/Provisioning Profiles/autofill.provisionprofile"
+          autofill_uuid=$(security cms -D -i "$HOME/Library/MobileDevice/Provisioning Profiles/autofill.provisionprofile" | plutil -extract UUID xml1 -o - - | xmllint --xpath "string(//string)" -)
+          mv "$HOME/Library/MobileDevice/Provisioning Profiles/autofill.provisionprofile" "$HOME/Library/MobileDevice/Provisioning Profiles/$autofill_uuid.provisionprofile"
+          echo "${{ secrets.XCREDS_AUTOFILL_EXTENSION_PROFILE }}" | base64 --decode > "$HOME/Library/MobileDevice/Provisioning Profiles/extension.provisionprofile"
+          extension_uuid=$(security cms -D -i "$HOME/Library/MobileDevice/Provisioning Profiles/extension.provisionprofile" | plutil -extract UUID xml1 -o - - | xmllint --xpath "string(//string)" -)
+          mv "$HOME/Library/MobileDevice/Provisioning Profiles/extension.provisionprofile" "$HOME/Library/MobileDevice/Provisioning Profiles/$extension_uuid.provisionprofile"
+
+          # Overwrite exportOptions.plist
+          echo "Overwriting exportOptions.plist"
+          cat <<EOF > build_resources/exportOptions.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>developer-id</string>
+              <key>signingStyle</key>
+              <string>manual</string>
+              <key>provisioningProfiles</key>
+              <dict>
+                  <key>${{ secrets.BUNDLE_ID_PREFIX }}.xcreds.XCreds-AutoFill</key>
+                  <string>$autofill_uuid</string>
+                  <key>${{ secrets.BUNDLE_ID_PREFIX }}.xcreds.XCreds-AutoFill.XCreds-AutoFill-Extension</key>
+                  <string>$extension_uuid</string>
+              </dict>
+          </dict>
+          </plist>
+          EOF
+
+          # Build
+          echo "starting build"
+          BUILD_LOG=$(mktemp)
+          ./build.sh | tee "$BUILD_LOG"
+          build_dir=$(tail -n 5 "$BUILD_LOG" | tac | grep -m1 'output is in' | sed 's/^output is in //')
+
+          # Fix packages
+          echo "fixing packages"
+          cd "$build_dir"
+          find . -iname "*.pkgproj" -type f | while read -r proj; do /usr/libexec/PlistBuddy -c "Delete :PROJECT:PROJECT_SETTINGS:CERTIFICATE" "$proj" 2>/dev/null || true; done
+          gsed -i '/REFERENCE_FOLDER_PATH/d' Packages/XCreds/XCreds_template.pkgproj
+          gsed -i '/\/tmp/d' Packages/XCreds/XCreds_template.pkgproj
+          cp -a XCreds.app Packages/XCreds
+
+          # Build packages
+          echo "starting package build"
+          find . -iname "XCreds*.pkgproj*" | sed -e 's_\(.*\)_"\1"_g' | xargs -L1 packagesbuild -v
+          echo "starting package sign"
+          mkdir -p $HOME/xcreds
+          find . -iname "*.pkg" -type f | while read -r pkg; do /usr/bin/productsign --sign "Developer ID Installer: ${{ secrets.DEVELOPER_ID }}" "$pkg" "${pkg}_signed" 2>/dev/null || true; mv "${pkg}_signed" "$pkg"; mv "$pkg" "$HOME/xcreds/"; done
+
+          # Notarize packages
+          echo "notarizing packages"
+
+          for pkg in "$HOME"/xcreds/*.pkg; do
+            echo "Submitting $pkg for notarization"
+            xcrun notarytool submit "$pkg" \
+              --key /tmp/api_key.p8 \
+              --key-id "${{ secrets.APPLE_API_KEY_ID }}" \
+              --issuer "${{ secrets.APPLE_API_ISSUER_ID }}" \
+              --wait
+
+            echo "Stapling notarization ticket to $pkg"
+            xcrun stapler staple "$pkg"
+          done
+
+          # Zip build dir
+          echo "zipping packages"
+          cd $HOME
+          zip -r xcreds.zip ./xcreds
+          echo "zip complete"
+
+          echo "zip_path=$HOME/xcreds.zip" >> $GITHUB_OUTPUT
+
+      - name: Create Draft Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          name: ${{ github.event.inputs.tag }}
+          draft: true
+          prerelease: false
+          files: ${{ steps.build.outputs.zip_path }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
