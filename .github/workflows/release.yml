@@ -28,7 +28,7 @@ jobs:
           id=$(echo "$id_full" | sed -E 's/^.*\((.*)\).*$/\1/')
 
           # Switch xcode verison
-          sudo xcode-select --switch /Applications/Xcode_26.0.app/Contents/Developer
+          sudo xcode-select --switch /Applications/Xcode_26.2.app/Contents/Developer
 
           # Install Homebrew if not installed
           which brew || /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
