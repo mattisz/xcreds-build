@@ -56,7 +56,7 @@ public enum NoMADSessionError: String, Error {
 /// MIT Kerberos schema); OD is retained for generic Open Directory/389-ds
 /// servers that don't carry the krb5kdc-ldap schema.
 public enum LDAPType {
-    case FreeIPA
+    case AD
     case OD
 }
 
@@ -109,7 +109,11 @@ public class NoMADSession: NSObject {
     public var kerberosRealm: String = ""           // Kerberos realm
     public var createKerbPrefs: Bool = true         // Determines if skeleton Kerb prefs should be set
 
-    public var ldaptype: LDAPType = .FreeIPA        // Type of LDAP server
+    public var siteIgnore: Bool = true
+    public var siteForce: Bool = false              // force a site?
+    public var siteForceSite: String = ""           // what site to force
+
+    public var ldaptype: LDAPType = .AD        // Type of LDAP server
     public var port: Int = 389                      // LDAP port typically either 389 or 636
     public var anonymous: Bool = false              // Anonymous LDAP lookup
     public var useSSL: Bool = false                 // Toggle SSL
@@ -134,7 +138,7 @@ public class NoMADSession: NSObject {
     ///   - domain: The IPA domain for the user.
     ///   - user: The user's name. Either the bare `uid`, or the full Kerberos principal (`uid@REALM`) are accepted.
     ///   - type: The type of LDAP connection. Defaults to FreeIPA.
-    public init(domain: String, user: String, type: LDAPType = .FreeIPA) {
+    public init(domain: String, user: String, type: LDAPType = .AD) {
 
         // configuration parts
         self.domain = domain
@@ -550,7 +554,7 @@ public class NoMADSession: NSObject {
         var groups = [String]()
         var userHome = ""
 
-        if ldaptype == .FreeIPA {
+        if ldaptype == .AD {
             // FreeIPA user entries combine posixAccount + krbPrincipalAux
             // (+ inetOrgPerson) objectClasses, so the relevant attributes are
             // uid, krbPrincipalName, krbLastPwdChange, krbPasswordExpiration,
@@ -1224,7 +1228,7 @@ extension NoMADSession: NoMADUserSession {
         if hosts.count == 0 {
             var errorMessage = "No LDAP servers can be reached."
             switch ldaptype {
-            case .FreeIPA: errorMessage = "No FreeIPA servers can be reached."
+            case .AD: errorMessage = "No FreeIPA servers can be reached."
             case .OD: errorMessage = "No Open Directory servers can be reached."
             }
             delegate?.NoMADAuthenticationFailed(error: NoMADSessionError.OffDomain, description: errorMessage)
