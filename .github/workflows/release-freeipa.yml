@@ -215,8 +215,8 @@ jobs:
       - name: Create Draft Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ github.event.inputs.tag }}
-          name: ${{ github.event.inputs.tag }}
+          tag_name: "${{ github.event.inputs.tag }}_ipa"
+          name: "${{ github.event.inputs.tag }}_ipa"
           draft: true
           prerelease: false
           files: ${{ steps.build.outputs.zip_path }}
