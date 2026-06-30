@@ -28,7 +28,7 @@ jobs:
           id=$(echo "$id_full" | sed -E 's/^.*\((.*)\).*$/\1/')
 
           # Switch xcode verison
-          sudo xcode-select --switch /Applications/Xcode_26.2.app/Contents/Developer
+          sudo xcode-select --switch /Applications/Xcode_26.0.app/Contents/Developer
 
           # Install Homebrew if not installed
           which brew || /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
@@ -94,6 +94,9 @@ jobs:
           # Disable git in build script
           echo "disable git in build"
           gsed -i 's/^git/#git/' build_resources/buildscripts/build.sh
+
+          # Remove debug logging from TokenManager:
+          gsed -i 's/,[^,]*Debug")//' XCreds/TokenManager.swift
 
           # Authenticate with Apple
           echo "${{ secrets.APPLE_API_KEY }}" > /tmp/api_key.p8
