@@ -334,7 +334,7 @@ public class NoMADSession: NSObject {
                         if myLDAPResult != "" && !myLDAPResult.contains("GSSAPI Error") && !myLDAPResult.contains("Can't contact") {
                             let ldifResult = cleanLDIF(myLDAPResult)
                             if ( ldifResult.count > 0 ) {
-                                defaultNamingContext = getAttributeForSingleRecordFromCleanedLDIF(attribute, ldif: ldifResult)
+                                defaultNamingContext = selectDomainNamingContext(getAttributeForSingleRecordFromCleanedLDIF(attribute, ldif: ldifResult))
                                 hosts[i].status = "live"
                                 hosts[i].timeStamp = Date()
                                 myLogger.logit(.base, message:"Current LDAP Server is: " + hosts[i].host )
@@ -767,6 +767,29 @@ public class NoMADSession: NSObject {
         return records
     }
 
+    /// FreeIPA / 389-DS RootDSE returns multiple `namingContexts` values
+    /// (the domain suffix, plus `o=ipaca` for the CA backend and
+    /// `cn=changelog` for replication). cleanLDIF() folds repeated values
+    /// for the same attribute together with ";" - correct for genuinely
+    /// multi-valued attributes like memberOf, but wrong here, since it
+    /// produces something like "dc=example,dc=com;cn=changelog;o=ipaca"
+    /// which is not a usable search base. Pick out just the actual domain
+    /// suffix (the "dc=" one that isn't cn=changelog/o=ipaca).
+    fileprivate func selectDomainNamingContext(_ raw: String) -> String {
+        let candidates = raw.components(separatedBy: ";")
+        if candidates.count == 1 {
+            return raw
+        }
+        for candidate in candidates {
+            let lower = candidate.lowercased()
+            if lower.hasPrefix("dc=") && !lower.contains("cn=changelog") {
+                return candidate
+            }
+        }
+        // fallback: first candidate if nothing matched the dc= pattern
+        return candidates.first ?? raw
+    }
+
     fileprivate func getAttributeForSingleRecordFromCleanedLDIF(_ attribute: String, ldif: [[String:String]]) -> String {
         var result: String = ""
 
@@ -855,7 +878,7 @@ public class NoMADSession: NSObject {
         if myLDAPResult != "" && !myLDAPResult.contains("GSSAPI Error") && !myLDAPResult.contains("Can't contact") {
             let ldifResult = cleanLDIF(myLDAPResult)
             if ( ldifResult.count > 0 ) {
-                defaultNamingContext = getAttributeForSingleRecordFromCleanedLDIF(attribute, ldif: ldifResult)
+                defaultNamingContext = selectDomainNamingContext(getAttributeForSingleRecordFromCleanedLDIF(attribute, ldif: ldifResult))
                 return true
             }
         }
@@ -1336,7 +1359,7 @@ extension NoMADSession {
         if result != "" && !result.contains("GSSAPI Error") && !result.contains("Can't contact") {
             let ldifResult = cleanLDIF(result)
             if ( ldifResult.count > 0 ) {
-                defaultNamingContext = getAttributeForSingleRecordFromCleanedLDIF(attribute, ldif: ldifResult)
+                defaultNamingContext = selectDomainNamingContext(getAttributeForSingleRecordFromCleanedLDIF(attribute, ldif: ldifResult))
                 hosts[index].status = "live"
                 hosts[index].timeStamp = Date()
                 myLogger.logit(.base, message:"Current LDAP Server is: " + hosts[index].host )
