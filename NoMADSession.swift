@@ -568,7 +568,23 @@ public class NoMADSession: NSObject {
 
             let searchTerm = "(|(uid="+userPrincipalShort+")(krbPrincipalName="+userPrincipalShort+"@"+kerberosRealm+"))"
 
-            if let ldifResult = try? getLDAPInformation(attributes, searchTerm: searchTerm) {
+            // Scope this to the real accounts tree (cn=accounts,<basedn>),
+            // not the whole domain suffix. FreeIPA's schema-compat plugin
+            // (slapi-nis) publishes a shadow copy of every active user under
+            // cn=users,cn=compat,<basedn> for legacy NIS/NSS lookups, right
+            // alongside the authoritative entry under
+            // cn=users,cn=accounts,<basedn>. Searching from the domain
+            // suffix matches both and getUserInformation() (correctly)
+            // bails out as "Multiple records found" rather than guess which
+            // is real.
+            let tempDefaultNamingContext = defaultNamingContext
+            defaultNamingContext = "cn=accounts," + defaultNamingContext
+
+            let ldifResultOrNil = try? getLDAPInformation(attributes, searchTerm: searchTerm, overrideDefaultNamingContext: true)
+
+            defaultNamingContext = tempDefaultNamingContext
+
+            if let ldifResult = ldifResultOrNil {
                 if ldifResult.count>1 {
 
                     TCSLogWithMark("Multiple records found. exiting")
